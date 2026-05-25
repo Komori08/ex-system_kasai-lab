@@ -75,15 +75,6 @@ samples_tone1=[] #tone1のサウンドデータ
 samples_tone2=[]
 samples_tone3=[]
 
-# Sensor1検出後、この時刻まではソレノイドを動かさない。
-# 値は time.perf_counter() の絶対時刻で管理する。
-time_solenoid_block_until = 0
-
-# Sensor1検出後にソレノイドを禁止する時間（秒）。
-# ここを変更すると「y秒間」の長さを調整できる。
-# 例: 5秒間禁止したい場合は 5.0 にする。
-solenoid_block_after_sensor_sec = 2.0
-
 logger = logging.getLogger(__name__)
 
 
@@ -713,9 +704,6 @@ def opto3_timer(queue):
 def solenoid_common_timer(item, queue, flag_solenoid, list_solenoid_time, count_solenoid, duration, pin):
     """
     ソレノイドをONにする（スクロース水を与える）。solenoid1_timerとsolenoid2_timerの共通部分
-
-    Sensor1検出後の禁止期間中であれば、ソレノイドをONにせず、
-    CSVログに ``solenoid1_blocked_by_sensor`` などを記録する。
     
     Parameters
     item: str
@@ -740,27 +728,17 @@ def solenoid_common_timer(item, queue, flag_solenoid, list_solenoid_time, count_
         まだソレノイドをONにするのであればTrue、最後のtrialになったらFalse    
     """
     global time_start, flag_session_start, pi
-    global time_solenoid_block_until
-
     if time.perf_counter()>time_start + list_solenoid_time[count_solenoid]:
-        now = time.perf_counter()
-
         count_solenoid = count_solenoid + 1
-        # solenoid trialの最後であればこれ以上solenoidは出力しない
+        #solenoid trialの最後であればこれ以上solenoidは出力しない
         if count_solenoid == len(list_solenoid_time):
             flag_solenoid = False
-
-        # Sensor1検出後の禁止期間中なら、このsolenoidはONにせずskipする。
-        if now < time_solenoid_block_until:
-            queue.put([now-time_start, item+"_blocked_by_sensor"])
-            return count_solenoid, flag_solenoid
-
-        queue.put([now-time_start, item+"_on"])
-        # solenoidをON
+        queue.put([time.perf_counter()-time_start, item+"_on"])
+        # solenoid1をON
         pi.write(pin,1)
-        # solenoid_duration_box.get()の秒数だけ待機
+        #solenoid1_duration_box.get()の秒数だけ待機
         time.sleep(duration)
-        # solenoidをOFF
+        # solenoid1をOFF
         pi.write(pin,0)
         queue.put([time.perf_counter()-time_start, item+"_off"])
     return count_solenoid, flag_solenoid
@@ -1115,7 +1093,6 @@ def event_sensor1(gpio, level, tick):
     Returns なし
     """
     global q, time_start, sensor1_label, time_solenoid1_on, list_lick_time, time_last_lick
-    global time_solenoid_block_until, solenoid_block_after_sensor_sec
     if level:
         sensor1_label['foreground'] = "black" #sensor1を黒で表示する
         # リッキングしたら（sensor1がON）、水を与える（solenoid1をON）にする。ただし0.2秒以上の間隔をあける
@@ -1129,17 +1106,9 @@ def event_sensor1(gpio, level, tick):
                 q.put([round(time.perf_counter()-time_start,5), "solenoid1"])
     else:
         if flag_session_start:
-            now = time.perf_counter()
-            q.put([round(now-time_start,5), "sensor1"])    
-            time_last_lick = now-time_start
-            list_lick_time.append(round(now-time_start,5))
-
-            # Sensor1を検出したら、その後 y 秒間は予定されたソレノイドを動かさない。
-            # y 秒はグローバル変数 solenoid_block_after_sensor_sec で設定する。
-            if solenoid_block_after_sensor_sec > 0:
-                time_solenoid_block_until = now + solenoid_block_after_sensor_sec
-                q.put([round(now-time_start,5), "solenoid_block_start"])
-                q.put([round(time_solenoid_block_until-time_start,5), "solenoid_block_until"])
+            q.put([round(time.perf_counter()-time_start,5), "sensor1"])    
+            time_last_lick = time.perf_counter()-time_start
+            list_lick_time.append(round(time.perf_counter()-time_start,5))    
         sensor1_label['foreground'] = "red" #sensor1を赤で表示する
     
 #    if level:
@@ -1796,14 +1765,10 @@ def startSession():
     global thread_opto1_timer, thread_opto2_timer, thread_opto3_timer, thread_record_temperature
     global dac, next_imaging_focus, time_last_feedback, list_feedback, time_last_lick
     global picam2, fname_video
-    global time_solenoid_block_until
     # 入力された値が正しそうかチェックする
     
     #GPIO制御の準備
     set_pin()
-
-    # 前セッションのSensor1由来のソレノイド禁止状態をリセットする。
-    time_solenoid_block_until = 0
 #    pi.set_mode(int(solenoid1_pin_box.get()), pigpio.OUTPUT)
 #    pi.set_mode(int(solenoid2_pin_box.get()), pigpio.OUTPUT)
 #    pi.set_mode(int(tone2_led_pin_box.get()), pigpio.OUTPUT)
@@ -2369,7 +2334,6 @@ def saveParameter(experiment_info=None):
     data['sensor1'] = {
         'pin': sensor1_pin_box.get()
         , 'with_solenoid': sensor1_to_solenoid1_variable.get()
-        , 'solenoid_block_after_sensor_sec': solenoid_block_after_sensor_sec
     }
     data['sensor2'] = {
         'pin': sensor2_pin_box.get()
@@ -2562,9 +2526,6 @@ def loadParameter():
         sensor1_pin_box.delete(0,"end")
         sensor1_pin_box.insert(0, data['sensor1']['pin'])
         sensor1_to_solenoid1_variable.set(data['sensor1']['with_solenoid'])
-        if 'solenoid_block_after_sensor_sec' in data['sensor1']:
-            global solenoid_block_after_sensor_sec
-            solenoid_block_after_sensor_sec = float(data['sensor1']['solenoid_block_after_sensor_sec'])
         if ver_pyCond>=2.7:
             sensor2_pin_box.delete(0,"end")
             sensor2_pin_box.insert(0, data['sensor2']['pin'])
