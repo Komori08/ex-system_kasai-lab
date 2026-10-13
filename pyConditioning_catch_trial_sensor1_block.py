@@ -85,6 +85,7 @@ schedule_lock = threading.RLock()
 sensor1_response_window_sec = 0.0
 sensor1_silent_period_sec = 0.0
 planned_trial_end = 0.0
+minimum_session_duration_sec = 7 * 60
 block_trial_duration_sec = 0.0
 session_trial_order = []
 
@@ -1199,7 +1200,7 @@ def _insert_silent_period_after_skip(trial_index, skipped_tone_time, duration):
             if event[0] >= boundary:
                 event[0] += duration
         planned_trial_end += duration
-        time_end = time_start + max(7 * 60, planned_trial_end)
+        time_end = time_start + max(minimum_session_duration_sec, planned_trial_end)
     q.put([round(time.perf_counter() - time_start, 5),
            "silent_period_inserted_after_tone1_solenoid_skip"])
     q.put([round(time.perf_counter() - time_start, 5),
@@ -1913,11 +1914,22 @@ def startSession():
     global thread_trial_skip_event_timer, list_tone_solenoid_skip_events, list_skipped_tone_times
     global list_skipped_tone_trial_indices, timeout_inserted_trials, block_mode_active, list_tone1_labels
     global sensor1_response_window_sec, sensor1_silent_period_sec, planned_trial_end
+    global minimum_session_duration_sec
     global block_trial_duration_sec, session_trial_order
     global dac, next_imaging_focus, time_last_feedback, list_feedback, time_last_lick
     global picam2, fname_video
     global time_solenoid_block_until
     # 入力された値が正しそうかチェックする
+    try:
+        initial_silence_sec = float(initial_silence_box.get())
+        minimum_session_duration_sec = float(minimum_session_duration_box.get())
+    except ValueError:
+        messagebox.showerror('error', 'Set numeric values for initial silence and minimum recording duration')
+        return
+    if (not math.isfinite(initial_silence_sec) or initial_silence_sec < 0
+            or not math.isfinite(minimum_session_duration_sec) or minimum_session_duration_sec < 0):
+        messagebox.showerror('error', 'Initial silence and minimum recording duration must be non-negative')
+        return
     try:
         sensor1_after_skipped_tone_window_sec = float(sensor1_after_skipped_tone_window_box.get())
         sensor1_solenoid_block_sec = float(sensor1_solenoid_block_duration_box.get())
@@ -2076,7 +2088,8 @@ def startSession():
                                  float(inter_trial_interval_box2.get()),
                                  float(inter_trial_interval_box3.get()),
                                  float(inter_trial_interval_box4.get())]
-    time_trial_start = [random.choice(list_inter_trial_interval)]
+    # The initial silent period precedes the first randomly selected ITI.
+    time_trial_start = [initial_silence_sec + random.choice(list_inter_trial_interval)]
     for i in range(1, nTrials):
         prior_duration = float(trial_duration_box.get())
         if block_mode_active and list_trial[i - 1] == 'tone1_solenoid_skip':
@@ -2362,7 +2375,7 @@ def startSession():
     length_session = (time_trial_start[-1] + last_trial_duration
                       + random.choice(list_inter_trial_interval))
     planned_trial_end = length_session
-    length_session = max(7 * 60, planned_trial_end)
+    length_session = max(minimum_session_duration_sec, planned_trial_end)
     estimated_time_display["text"] = second2string(int(length_session))
     time_start = time.perf_counter()
     time_end = time_start + length_session
@@ -2634,6 +2647,8 @@ def saveParameter(experiment_info=None):
     }
     data['trial'] = {
         'duration': trial_duration_box.get(), 'condition_order': session_trial_order,
+        'initial_silence_sec': initial_silence_box.get(),
+        'minimum_session_duration_sec': minimum_session_duration_box.get(),
         'inter_trial_interval1': inter_trial_interval_box1.get(),
         'inter_trial_interval2': inter_trial_interval_box2.get(),'inter_trial_interval3': inter_trial_interval_box3.get(),
         'inter_trial_interval4': inter_trial_interval_box4.get(), 
@@ -2845,6 +2860,10 @@ def loadParameter():
             sensor3_to_tone_variable.set(data['sensor3']['with_tone'])
         trial_duration_box.delete(0,"end")
         trial_duration_box.insert(0, data['trial']['duration'])
+        initial_silence_box.delete(0, "end")
+        initial_silence_box.insert(0, data['trial'].get('initial_silence_sec', '0'))
+        minimum_session_duration_box.delete(0, "end")
+        minimum_session_duration_box.insert(0, data['trial'].get('minimum_session_duration_sec', '420'))
         inter_trial_interval_box1.delete(0,"end")
         inter_trial_interval_box1.insert(0, data['trial']['inter_trial_interval1'])
         inter_trial_interval_box2.delete(0,"end")
@@ -3288,6 +3307,12 @@ inter_trial_interval_box3 = ttk.Entry(main_frm)
 inter_trial_interval_box3.insert(0, '6')
 inter_trial_interval_box4 = ttk.Entry(main_frm)
 inter_trial_interval_box4.insert(0, '8')
+initial_silence_label = ttk.Label(main_frm, text="Initial silent period (s)")
+initial_silence_box = ttk.Entry(main_frm, width=8)
+initial_silence_box.insert(0, '0')
+minimum_session_duration_label = ttk.Label(main_frm, text="End after Start (s, min)")
+minimum_session_duration_box = ttk.Entry(main_frm, width=8)
+minimum_session_duration_box.insert(0, '420')
 
 #imaging
 imaging_variable = tkinter.BooleanVar() 
@@ -3610,6 +3635,10 @@ inter_trial_interval_box1.grid(column=3, row=r_trial, padx=5)
 inter_trial_interval_box2.grid(column=4, row=r_trial, padx=5)
 inter_trial_interval_box3.grid(column=5, row=r_trial, padx=5)
 inter_trial_interval_box4.grid(column=6, row=r_trial, padx=5)
+initial_silence_label.grid(column=0, row=r_trial+2, padx=5)
+initial_silence_box.grid(column=1, row=r_trial+2, padx=5)
+minimum_session_duration_label.grid(column=2, row=r_trial+2, padx=5)
+minimum_session_duration_box.grid(column=3, row=r_trial+2, padx=5)
 imaging_check.grid(column=0, row=r_trial+1, padx=5)
 imaging_trigger_pin_label.grid(column=2, row=r_trial+1, padx=5)
 imaging_trigger_pin_box.grid(column=3, row=r_trial+1, padx=5)
@@ -3631,7 +3660,7 @@ focus_voltage_box.grid(column=6, row=r_opto3+2, padx=15, columnspan = 2)
 separator10.grid(row=r_opto2, rowspan=6, column=5, columnspan=2, sticky="ns")
 
 #Button
-r_button=27
+r_button=28
 start_button.grid(column=0, row=r_button, padx=5, pady=10)
 cancel_button.grid(column=1, row=r_button, padx=5, pady=10)
 cancel_button["state"] = "disable"
